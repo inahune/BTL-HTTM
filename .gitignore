@@ -160,3 +160,15 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# YOLO & Application runtime data
+runs/
+*.cache
+web_app/uploads/*
+!web_app/uploads/.gitkeep
+web_app/snapshots/*
+!web_app/snapshots/.gitkeep
+web_app/*.db
+web_app/*.db-journal
+web_app/data/*.db
+web_app/data/*.db-journal

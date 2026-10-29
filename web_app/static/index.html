@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hệ Thống Phát Hiện Người Đuối Nước - YOLO26 AI</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- BANNER CẢNH BÁO KHẨN CẤP KHI PHÁT HIỆN ĐUỐI NƯỚC -->
+  <div id="emergencyBanner" class="emergency-banner hidden">
+    <div class="emergency-content">
+      <span class="siren-icon">🚨</span>
+      <div>
+        <strong>CẢNH BÁO KHẨN CẤP: PHÁT HIỆN NGƯỜI ĐUỐI NƯỚC LIÊN TIẾP TRÊN 30 GIÂY!</strong>
+        <p id="emergencyDetail">Thời gian chìm: --s | Đã tự động kích hoạt còi và lưu vào Cơ sở dữ liệu Cảnh báo</p>
+      </div>
+      <button id="btnMuteBanner" class="btn btn-sm btn-light">Tắt còi tạm thời</button>
+    </div>
+  </div>
+
+  <!-- HEADER -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-logo">🛟</div>
+      <div>
+        <h1>HỆ THỐNG GIÁM SÁT & PHÁT HIỆN NGƯỜI ĐUỐI NƯỚC</h1>
+        <p>Mô hình AI: <strong>YOLO26s (yolov26-dataset12k-v2)</strong> • Phân loại 3 trạng thái thời gian thực</p>
+      </div>
+    </div>
+
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-tab="tab-monitor">🎥 Giám Sát Trực Tuyến</button>
+      <button class="nav-tab" data-tab="tab-alerts">
+        📜 Lịch Sử & Thống Kê Cảnh Báo
+        <span id="navAlertBadge" class="badge-count">0</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-eval">📊 Đánh Giá Mô Hình (mAP / Precision / Recall)</button>
+    </nav>
+  </header>
+
+  <main class="container">
+    <!-- ========================================================== -->
+    <!-- TAB 1: GIÁM SÁT TRỰC TUYẾN & PHÁT HIỆN 3 TRẠNG THÁI         -->
+    <!-- ========================================================== -->
+    <section id="tab-monitor" class="tab-panel active">
+      <div class="monitor-grid">
+        <!-- CỘT TRÁI: ĐIỀU KHIỂN & TẢI VIDEO / ẢNH -->
+        <aside class="control-card card">
+          <h2>⚙️ Điều Khiển Giám Sát</h2>
+
+          <!-- 1. Tải video hoặc ảnh từ máy tính -->
+          <div class="control-group">
+            <label class="group-label">1. Tải Video hoặc Ảnh từ máy tính</label>
+            <label for="fileUploadInput" class="upload-dropzone" id="uploadDropzone">
+              <div class="upload-icon">📤</div>
+              <div><strong>Nhấn để chọn Video / Ảnh</strong> hoặc kéo thả vào đây</div>
+              <small>Hỗ trợ: .mp4, .avi, .mov, .jpg, .png, .webp</small>
+              <input type="file" id="fileUploadInput" accept="video/*,image/*" hidden />
+            </label>
+            <div id="uploadStatus" class="upload-status"></div>
+          </div>
+
+          <!-- 2. Chọn nguồn Video / Ảnh có sẵn -->
+          <div class="control-group">
+            <label class="group-label" for="sampleSelect">2. Chọn nguồn Video / Ảnh kiểm thử</label>
+            <select id="sampleSelect" class="form-select"></select>
+          </div>
+
+          <!-- 3. Chọn Model AI Giám Sát & Kết Hợp Đa Mô Hình (Ensemble) -->
+          <div class="control-group">
+            <label class="group-label" for="monitorModelSelect">3. Cấu Hình Model AI Giám Sát</label>
+            <select id="monitorModelSelect" class="form-select">
+              <optgroup label="🔥 KẾT HỢP NHIỀU MODEL (ENSEMBLE - TỐT NHẤT)">
+                <option value="ensemble_committee" selected>🌟 Hội Đồng 3 AI (v3 Best + v3 Recall + v1) - Khuyên dùng</option>
+                <option value="ensemble_v3_rec_v1">⭐ Ensemble Siêu Nhạy (v3 Recall + v1) - Bắt trọn Video 7 & Người ở xa</option>
+                <option value="ensemble_v3_v1">⚡ Ensemble Cân Bằng (v3 Best + v1) - Chuẩn xác & Khung đẹp</option>
+              </optgroup>
+              <optgroup label="🎯 CHẠY ĐƠN LẺ TỪNG MODEL">
+                <option value="yolov26_v3_best">🏆 YOLO26s v3 Best (89.7% mAP50 - Chuẩn khung nhất)</option>
+                <option value="yolov26_v3_recall">🔍 YOLO26s v3 Recall (best_recall.pt - Bắt hết người)</option>
+                <option value="yolov26_v1">📦 YOLO26s v1 (10 Epochs - Bắt người thành bể)</option>
+                <option value="yolov26_v2">📦 YOLO26s v2 (25 Epochs)</option>
+                <option value="yolov8n">📦 YOLOv8n Baseline</option>
+              </optgroup>
+              <optgroup label="🛠️ TÙY CHỌN TỰ DO">
+                <option value="custom">⚙️ Tự Chọn Mô Hình Kết Hợp Bên Dưới</option>
+              </optgroup>
+            </select>
+
+            <!-- Khối checkbox cho phép người dùng tự do tích chọn kết hợp các model -->
+            <div class="model-ensemble-panel" id="modelEnsemblePanel">
+              <div class="ensemble-panel-title">
+                <span>🧩 Chọn các Model tham gia Hội đồng (Ensemble):</span>
+              </div>
+              <div class="ensemble-checkbox-grid">
+                <label class="ensemble-cb-item">
+                  <input type="checkbox" class="chk-model" value="yolov26_v3_best" checked />
+                  <span><strong>v3 Best</strong> (best.pt)</span>
+                </label>
+                <label class="ensemble-cb-item">
+                  <input type="checkbox" class="chk-model" value="yolov26_v3_recall" checked />
+                  <span><strong>v3 Recall</strong> (người xa)</span>
+                </label>
+                <label class="ensemble-cb-item">
+                  <input type="checkbox" class="chk-model" value="yolov26_v1" checked />
+                  <span><strong>v1</strong> (bám bể)</span>
+                </label>
+                <label class="ensemble-cb-item">
+                  <input type="checkbox" class="chk-model" value="yolov26_v2" />
+                  <span><strong>v2</strong> (25 ep)</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- 4. Cấu hình ngưỡng nhận diện & âm thanh -->
+          <div class="control-group">
+            <label class="group-label">
+              4. Ngưỡng độ tin cậy (Confidence): <span id="confValueLabel">0.22</span>
+            </label>
+            <input type="range" id="confSlider" min="0.10" max="0.80" step="0.02" value="0.22" class="range-slider" />
+
+            <label class="group-label" style="margin-top: 10px;">
+              ⏱️ Thời gian chìm liên tiếp để phát cảnh báo: <strong id="drownSecLabel">30 giây</strong>
+            </label>
+            <input type="range" id="drownSecSlider" min="5" max="60" step="5" value="30" class="range-slider" />
+            <small style="color: var(--text-muted); font-size: 0.78rem; display: block; margin-top: -6px; margin-bottom: 10px;">
+              Quy định an toàn: Chìm liên tục đủ 30 giây mới hú còi báo động khẩn cấp.
+            </small>
+
+            <label class="checkbox-row">
+              <input type="checkbox" id="chkSmartFilter" checked />
+              <span>Bộ lọc chống bọt nước thông minh (HSV)</span>
+            </label>
+
+            <label class="checkbox-row">
+              <input type="checkbox" id="chkAudioAlert" checked />
+              <span>🔊 Phát còi báo động & giọng nói khi đuối nước</span>
+            </label>
+          </div>
+
+          <!-- 5. Nút Bắt đầu / Dừng Giám Sát -->
+          <div class="action-buttons">
+            <button id="btnStart" class="btn btn-primary btn-block">▶️ Bắt Đầu Giám Sát</button>
+            <button id="btnWebcam" class="btn btn-secondary btn-block">📷 Bật Webcam Máy Tính</button>
+            <button id="btnStop" class="btn btn-danger btn-block" disabled>⏹️ Dừng Giám Sát</button>
+          </div>
+
+          <div class="test-alert-box">
+            <button id="btnTestAlarm" class="btn btn-warning btn-block">
+              🔔 Test Cảnh Báo Âm Thanh & Lưu CSDL
+            </button>
+          </div>
+        </aside>
+
+        <!-- CỘT PHẢI: KHUNG HÌNH GIÁM SÁT & THỐNG KÊ 3 TRẠNG THÁI -->
+        <div class="viewport-column">
+          <!-- 4 THẺ ĐẾM TRẠNG THÁI TRONG KHUNG HÌNH -->
+          <div class="kpi-row">
+            <div class="kpi-card total">
+              <span class="kpi-title">👥 Tổng số người phát hiện</span>
+              <strong class="kpi-value" id="countTotal">0</strong>
+              <small id="fpsInfo">Trạng thái: Chờ giám sát</small>
+            </div>
+            <div class="kpi-card drowning" id="drowningCard">
+              <span class="kpi-title">🚨 Đuối nước (Chìm liên tiếp &gt; 30s)</span>
+              <strong class="kpi-value" id="countDrowning">0</strong>
+              <small id="maxDrownConf">Thời gian chìm: 0.0s / 30s</small>
+            </div>
+            <div class="kpi-card swimming">
+              <span class="kpi-title">🏊 Đang bơi (Swimming)</span>
+              <strong class="kpi-value" id="countSwimming">0</strong>
+              <small>Hoạt động bình thường dưới nước</small>
+            </div>
+            <div class="kpi-card outofwater">
+              <span class="kpi-title">🧍 Trên bờ (Out of water)</span>
+              <strong class="kpi-value" id="countOutOfWater">0</strong>
+              <small>Người đứng trên thành bể / bờ</small>
+            </div>
+          </div>
+
+          <!-- MÀN HÌNH HIỂN THỊ VIDEO / ẢNH NHẬN DIỆN -->
+          <div class="video-container card" id="videoContainer">
+            <div class="video-topbar">
+              <div>
+                <span id="liveDot" class="status-dot idle"></span>
+                <strong id="currentSourceTitle">Chưa chạy giám sát</strong>
+              </div>
+              <div class="legend-pills">
+                <span class="pill pill-drowning">■ Đuối nước (Khung Đỏ)</span>
+                <span class="pill pill-swimming">□ Đang bơi (Khung Trắng)</span>
+                <span class="pill pill-out">□ Trên bờ (Khung Trắng)</span>
+              </div>
+            </div>
+
+            <div class="stream-wrapper">
+              <video id="webcamVideo" autoplay playsinline muted style="display: none; width: 100%; height: auto;"></video>
+              <canvas id="webcamCanvas" style="display: none;"></canvas>
+              <img id="streamView" src="/api/frame.jpg" alt="Khung hình giám sát" />
+            </div>
+          </div>
+
+          <!-- BẢNG DANH SÁCH NGƯỜI & ĐỘ TIN CẬY TRONG KHUNG HÌNH HIỆN TẠI -->
+          <div class="card detections-card">
+            <div class="card-header-row">
+              <h3>🎯 Danh sách đối tượng phát hiện trong khung hình hiện tại</h3>
+              <span id="frameProgressBadge" class="tag">Frame: 0 / 0</span>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>#ID</th>
+                    <th>Phân loại trạng thái (YOLO)</th>
+                    <th>Độ tin cậy (Confidence)</th>
+                    <th>Tọa độ khung [x1, y1, x2, y2]</th>
+                  </tr>
+                </thead>
+                <tbody id="liveDetectionsBody">
+                  <tr>
+                    <td colspan="4" class="empty-cell">Nhấn "Bắt Đầu Giám Sát" để phát hiện người và hiển thị độ tin cậy.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================== -->
+    <!-- TAB 2: LỊCH SỬ & THỐNG KÊ CẢNH BÁO (SQLITE DATABASE)       -->
+    <!-- ========================================================== -->
+    <section id="tab-alerts" class="tab-panel">
+      <div class="kpi-row">
+        <div class="kpi-card drowning">
+          <span class="kpi-title">🚨 Tổng số bản ghi Cảnh báo</span>
+          <strong class="kpi-value" id="statTotalAlerts">0</strong>
+          <small>Lưu trữ trong SQLite (drowning_alerts.db)</small>
+        </div>
+        <div class="kpi-card warning">
+          <span class="kpi-title">⏳ Cảnh báo chưa xử lý</span>
+          <strong class="kpi-value" id="statPendingAlerts">0</strong>
+          <small>Cần cứu hộ xác nhận</small>
+        </div>
+        <div class="kpi-card total">
+          <span class="kpi-title">📈 Độ tin cậy Cảnh báo TB</span>
+          <strong class="kpi-value" id="statAvgConf">0%</strong>
+          <small>Trung bình các lần phát hiện</small>
+        </div>
+        <div class="kpi-card swimming">
+          <span class="kpi-title">🔥 Độ tin cậy Cao nhất</span>
+          <strong class="kpi-value" id="statPeakConf">0%</strong>
+          <small>Mức cảnh báo đỉnh điểm</small>
+        </div>
+      </div>
+
+      <div class="charts-grid">
+        <div class="card">
+          <h3>📊 Thống kê số lượng Cảnh báo theo nguồn Video / Ảnh</h3>
+          <canvas id="alertSourceChart" width="540" height="240"></canvas>
+        </div>
+        <div class="card">
+          <h3>📉 Diễn biến độ tin cậy qua các lần Cảnh báo gần nhất</h3>
+          <canvas id="alertTimelineChart" width="540" height="240"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header-row">
+          <h3>🗄️ Lịch sử Cảnh báo Đuối nước trong Cơ sở dữ liệu</h3>
+          <div class="btn-group">
+            <button id="btnRefreshAlerts" class="btn btn-sm btn-secondary">🔄 Làm mới</button>
+            <button id="btnClearAlerts" class="btn btn-sm btn-danger">🗑️ Xóa toàn bộ lịch sử</button>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Mã</th>
+                <th>Thời gian</th>
+                <th>Nguồn Video / Ảnh</th>
+                <th>Frame</th>
+                <th>Số người đuối nước</th>
+                <th>Tổng số người</th>
+                <th>Độ tin cậy</th>
+                <th>Ảnh chụp</th>
+                <th>Trạng thái</th>
+                <th>Thao tác</th>
+              </tr>
+            </thead>
+            <tbody id="alertsHistoryBody">
+              <tr>
+                <td colspan="10" class="empty-cell">Chưa có lịch sử cảnh báo nào.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================== -->
+    <!-- TAB 3: ĐÁNH GIÁ MÔ HÌNH (PRECISION, RECALL, mAP50, mAP50-95)-->
+    <!-- ========================================================== -->
+    <section id="tab-eval" class="tab-panel">
+      <div class="card eval-toolbar">
+        <div>
+          <h2>📊 Đánh Giá Huấn Luyện Mô Hình YOLO</h2>
+          <p id="evalModelMeta">Đang tải thông tin checkpoint...</p>
+        </div>
+        <div class="eval-select-box">
+          <label for="evalModelSelect">Chọn phiên bản mô hình:</label>
+          <select id="evalModelSelect" class="form-select">
+            <option value="yolov26_v3_recall">⭐ YOLO26s v3 Bắt Hết Người (best_recall.pt - Recall: 86.19%, mAP50: 89.59%)</option>
+            <option value="yolov26_v3_best">🏆 YOLO26s v3 Chuẩn Khung (best.pt - Precision: 89.74%, mAP50: 89.35%)</option>
+            <option value="yolov26_v2">YOLO26s Dataset 12k v2 (25 Epochs, imgsz=960)</option>
+            <option value="yolov26_v1">YOLO26s Dataset 12k v1 (10 Epochs, imgsz=640)</option>
+            <option value="yolov8n">YOLOv8n Baseline (223 Epochs, imgsz=640)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- 4 THƯỚC ĐO CHÍNH: PRECISION, RECALL, mAP50, mAP50-95 -->
+      <div class="kpi-row">
+        <div class="kpi-card eval-metric">
+          <span class="kpi-title">🎯 Precision (Độ chính xác)</span>
+          <strong class="kpi-value" id="metricPrecision">--%</strong>
+          <div class="progress-bar"><div id="barPrecision" class="progress-fill blue"></div></div>
+          <small>Tỷ lệ dự đoán đúng trên tổng số khung dự đoán</small>
+        </div>
+
+        <div class="kpi-card eval-metric">
+          <span class="kpi-title">🔍 Recall (Độ phủ / Độ nhạy)</span>
+          <strong class="kpi-value" id="metricRecall">--%</strong>
+          <div class="progress-bar"><div id="barRecall" class="progress-fill green"></div></div>
+          <small>Tỷ lệ phát hiện không bỏ sót đối tượng thật</small>
+        </div>
+
+        <div class="kpi-card eval-metric">
+          <span class="kpi-title">🏆 mAP@50 (IoU = 0.50)</span>
+          <strong class="kpi-value" id="metricMap50">--%</strong>
+          <div class="progress-bar"><div id="barMap50" class="progress-fill amber"></div></div>
+          <small>Độ chính xác trung bình tại ngưỡng IoU 50%</small>
+        </div>
+
+        <div class="kpi-card eval-metric">
+          <span class="kpi-title">📐 mAP@50-95 (IoU = 0.50:0.95)</span>
+          <strong class="kpi-value" id="metricMap5095">--%</strong>
+          <div class="progress-bar"><div id="barMap5095" class="progress-fill purple"></div></div>
+          <small>Độ sát của khung nhận diện qua các ngưỡng khắt khe</small>
+        </div>
+      </div>
+
+      <!-- BIỂU ĐỒ QUÁ TRÌNH TRAIN -->
+      <div class="charts-grid">
+        <div class="card">
+          <h3>📈 Biểu đồ hội tụ Precision, Recall, mAP@50 và mAP@50-95 theo Epoch</h3>
+          <canvas id="evalMetricsChart" width="540" height="260"></canvas>
+        </div>
+        <div class="card">
+          <h3>📉 Biểu đồ hàm mất mát (Box Loss & Classification Loss)</h3>
+          <canvas id="evalLossChart" width="540" height="260"></canvas>
+        </div>
+      </div>
+
+      <!-- BẢNG SO SÁNH 3 PHIÊN BẢN MODEL -->
+      <div class="card">
+        <h3>⚖️ Bảng đối chiếu trực tiếp các phiên bản Mô hình trong dự án</h3>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Phiên bản Mô hình</th>
+                <th>Epochs</th>
+                <th>Kích thước ảnh (imgsz)</th>
+                <th>Precision</th>
+                <th>Recall</th>
+                <th>F1-Score</th>
+                <th>mAP@50</th>
+                <th>mAP@50-95</th>
+                <th>Val Box Loss</th>
+                <th>Val Cls Loss</th>
+              </tr>
+            </thead>
+            <tbody id="modelComparisonBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- BẢNG LỊCH SỬ TỪNG EPOCH -->
+      <div class="card">
+        <h3>📋 Bảng chi tiết chỉ số qua từng Epoch huấn luyện</h3>
+        <div class="table-responsive epoch-table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Epoch</th>
+                <th>Precision</th>
+                <th>Recall</th>
+                <th>mAP@50</th>
+                <th>mAP@50-95</th>
+                <th>Train Box Loss</th>
+                <th>Train Cls Loss</th>
+                <th>Val Box Loss</th>
+                <th>Val Cls Loss</th>
+              </tr>
+            </thead>
+            <tbody id="epochHistoryBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- MODAL XEM ẢNH CHỤP CẢNH BÁO -->
+  <div id="snapshotModal" class="modal hidden">
+    <div class="modal-backdrop" id="modalBackdrop"></div>
+    <div class="modal-dialog card">
+      <div class="card-header-row">
+        <h3 id="modalTitle">Ảnh chụp khoảnh khắc Cảnh báo Đuối nước</h3>
+        <button id="btnCloseModal" class="btn btn-sm btn-secondary">✖ Đóng</button>
+      </div>
+      <img id="modalImage" src="" alt="Snapshot" class="snapshot-preview" />
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
