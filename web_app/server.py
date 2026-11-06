@@ -270,6 +270,27 @@ def box_metrics(b1, b2):
     return iou, contain
 
 
+def boxes_match_for_ensemble(b1, b2):
+    area1 = max((b1[2] - b1[0]) * (b1[3] - b1[1]), 1e-6)
+    area2 = max((b2[2] - b2[0]) * (b2[3] - b2[1]), 1e-6)
+    if max(area1, area2) / min(area1, area2) > 3.0:
+        return False
+
+    iou, contain = box_metrics(b1, b2)
+    if iou >= 0.35:
+        return True
+    if contain < 0.65:
+        return False
+
+    cx1 = (b1[0] + b1[2]) / 2
+    cy1 = (b1[1] + b1[3]) / 2
+    cx2 = (b2[0] + b2[2]) / 2
+    cy2 = (b2[1] + b2[3]) / 2
+    diag1 = np.hypot(b1[2] - b1[0], b1[3] - b1[1])
+    diag2 = np.hypot(b2[2] - b2[0], b2[3] - b2[1])
+    return np.hypot(cx1 - cx2, cy1 - cy2) <= 0.25 * min(diag1, diag2)
+
+
 def is_pure_splash_box(frame, xyxy):
     """
     Chỉ loại bỏ khung bọt nước rác thực sự (không có người).
@@ -472,13 +493,11 @@ class MonitoringEngine:
     def set_model(self, model_key: str):
         self.set_models(model_key)
 
-    def detect_boxes_raw(self, frame: np.ndarray, multiscale: bool = False, is_webcam: bool = False):
+    def detect_boxes_raw(self, frame: np.ndarray, multiscale: bool = False):
         """
         Quét và hợp nhất kết quả từ tất cả các Model đang kích hoạt trong Ensemble:
-        - v3 Recall / Best: quét ở độ phân giải 1088px (hoặc 768px cho webcam) để bắt người nhỏ ở xa.
-        - v1: quét ở 768px để bắt toàn diện người bám mép và thành bể.
-        - Hợp nhất cụm (IoU & Containment Box Expansion).
-        - Đồng thuận đa mô hình (Consensus Voting) để chuẩn hóa nhãn 100%.
+        - Dùng chung cấu hình suy luận và lọc cho webcam, video và ảnh.
+        - Hợp nhất cụm dự đoán và đồng thuận đa mô hình.
         """
         raw_preds = []
 
@@ -488,17 +507,10 @@ class MonitoringEngine:
                 if mdl is None:
                     continue
 
-                if is_webcam:
-                    imgsz = 768 if "v3" in mkey else 640
-                    detect_conf = max(0.12, self.conf_thres - 0.08)
-                else:
-                    imgsz = 1280
-                    detect_conf = max(0.10, self.conf_thres - 0.08)
-
                 res = mdl.predict(
                     source=frame,
-                    imgsz=imgsz,
-                    conf=detect_conf,
+                    imgsz=1280,
+                    conf=max(0.10, self.conf_thres - 0.08),
                     iou=0.45,
                     agnostic_nms=True,
                     augment=False,
@@ -508,7 +520,7 @@ class MonitoringEngine:
                 if res.boxes is not None:
                     for box in res.boxes:
                         b = box.xyxy[0].tolist()
-                        if not is_webcam and self.smart_filter and is_pure_splash_box(frame, b):
+                        if self.smart_filter and is_pure_splash_box(frame, b):
                             continue
                         raw_preds.append((b, float(box.conf[0]), int(box.cls[0]), mkey))
                 del res
@@ -518,26 +530,19 @@ class MonitoringEngine:
         for xyxy, conf, cls_id, src in raw_preds:
             matched = False
             for cl in clusters:
-                iou, contain = box_metrics(xyxy, cl["xyxy"])
-                if iou > 0.25 or contain > 0.40:
-                    cl["xyxy"] = [
-                        min(cl["xyxy"][0], xyxy[0]),
-                        min(cl["xyxy"][1], xyxy[1]),
-                        max(cl["xyxy"][2], xyxy[2]),
-                        max(cl["xyxy"][3], xyxy[3]),
-                    ]
+                if src not in cl["sources"] and boxes_match_for_ensemble(xyxy, cl["xyxy"]):
                     cl["votes"].append((cls_id, conf, src))
+                    cl["sources"].add(src)
                     matched = True
                     break
             if not matched:
-                clusters.append({"xyxy": list(xyxy), "votes": [(cls_id, conf, src)]})
+                clusters.append({"xyxy": list(xyxy), "votes": [(cls_id, conf, src)], "sources": {src}})
 
         kept = []
         for cl in clusters:
             votes = cl["votes"]
             best_conf = max(v[1] for v in votes)
-            min_thresh = max(0.12, self.conf_thres - 0.08) if is_webcam else self.conf_thres
-            if best_conf < min_thresh and len(votes) < 2:
+            if best_conf < self.conf_thres and len(votes) < 2:
                 continue
 
             source_max = {}
@@ -546,32 +551,33 @@ class MonitoringEngine:
 
             scores = {0: 0.0, 1: 0.0, 2: 0.0}
             drown_sources = set()
+            best_drown_conf = 0.0
             for (c, src), cf in source_max.items():
                 scores[c] += cf
                 if c == 0 and cf >= 0.18:
                     drown_sources.add(src)
+                    best_drown_conf = max(best_drown_conf, cf)
 
-            if is_webcam:
-                # 100% người trước Webcam máy tính trong lớp học/trên cạn -> Person out of water
+            multi_model_drowning = (
+                len(drown_sources) >= 2
+                and scores[0] >= 0.35
+                and scores[0] >= scores[2] * 0.85
+            )
+            single_model_drowning = (
+                best_drown_conf >= 0.65
+                and scores[0] >= scores[2] * 1.25
+            )
+            if multi_model_drowning or single_model_drowning:
+                final_cls = 0
+            elif scores[1] > scores[0] and scores[1] > scores[2] and scores[1] >= 0.35:
                 final_cls = 1
             else:
-                # Ưu tiên độ nhạy cảnh báo an toàn đuối nước:
-                # 1. Nếu có tín hiệu Đuối nước từ bất kỳ model AI nào hoặc điểm đuối nước vượt trội
-                if scores[0] >= 0.18 and (scores[0] >= scores[2] * 0.40 or len(drown_sources) >= 1):
-                    final_cls = 0
-                elif scores[1] > scores[0] and scores[1] > scores[2] and scores[1] >= 0.35:
-                    final_cls = 1
-                elif scores[0] > scores[2]:
-                    final_cls = 0
-                elif scores[2] > scores[0]:
-                    final_cls = 2
-                else:
-                    final_cls = 2
+                final_cls = 2
 
             kept.append((cl["xyxy"], min(0.98, best_conf * 1.05), final_cls))
         return kept
 
-    def render_boxes_on_frame(self, frame: np.ndarray, kept_boxes: list, is_webcam: bool = False):
+    def render_boxes_on_frame(self, frame: np.ndarray, kept_boxes: list):
         """Ve danh sach khung (xyxy, conf, cls_id) len frame va tra ve thong ke 3 trang thai."""
         names = self.model.names
         annotated = frame.copy()
@@ -584,15 +590,6 @@ class MonitoringEngine:
         det_list = []
 
         for idx, (xyxy, conf, cls_id) in enumerate(kept_boxes, start=1):
-            if is_webcam:
-                cls_id = 1  # 100% Chế độ Demo Webcam trong phòng học: Tất cả đều là Person out of water
-                # Mo rong khung bao tron ca dau, vai va nguc nguoi ngoi truoc webcam
-                h_box = xyxy[3] - xyxy[1]
-                w_box = xyxy[2] - xyxy[0]
-                h_img = frame.shape[0]
-                if h_box < 1.35 * w_box and xyxy[3] < h_img - 6:
-                    xyxy = [xyxy[0], max(0, xyxy[1] - 0.08 * h_box), xyxy[2], min(float(h_img - 2), xyxy[3] + 0.28 * h_box)]
-
             raw_name = names.get(cls_id, str(cls_id))
             if cls_id == 0:
                 drowning_count += 1
@@ -703,14 +700,8 @@ class MonitoringEngine:
                     # Nếu người bơi đang lướt sải nhanh qua làn bơi (> 35 px/s), chỉ là chìm đầu tạm thời khi lấy hơi
                     final_cls = 2 if (is_moving_swimmer and conf < 0.65) else 0
                 else:
-                    # Nếu trước đó đối tượng đã ở trạng thái Đuối nước (cls 0) và vẫn đứng yên / vùng vẫy tại chỗ (không bơi tịnh tiến):
-                    # Duy trì liên tục trạng thái Đuối nước, không để bị chập chờn thành bơi lội
-                    if trk.get("cls_id") == 0 and not is_moving_swimmer:
-                        drown_streak = trk.get("drown_streak", 0) + 1
-                        final_cls = 0
-                    else:
-                        drown_streak = max(0, trk.get("drown_streak", 0) - 1)
-                        final_cls = raw_cls
+                    drown_streak = max(0, trk.get("drown_streak", 0) - 1)
+                    final_cls = raw_cls
 
                 updated.append({
                     "bbox": smooth_bbox,
@@ -887,7 +878,7 @@ class MonitoringEngine:
                 continue
 
             last_processed_idx = f_idx
-            new_boxes = self.detect_boxes_raw(frame_to_process, multiscale=False, is_webcam=(self.source_type == "webcam"))
+            new_boxes = self.detect_boxes_raw(frame_to_process, multiscale=False)
             self._update_tracks_from_ai(new_boxes, time.time())
             gc.collect()
 
@@ -937,7 +928,7 @@ class MonitoringEngine:
                         self._pending_frame_idx = frame_idx
 
                     interp_boxes = self._get_interpolated_boxes(time.time())
-                    result_img, counts, max_drown_conf, det_list = self.render_boxes_on_frame(frame, interp_boxes, is_webcam=True)
+                    result_img, counts, max_drown_conf, det_list = self.render_boxes_on_frame(frame, interp_boxes)
                     self._update_state_and_alert(result_img, counts, max_drown_conf, det_list, frame_idx, 999999, fps_ema)
                     elapsed = time.time() - t_start
                     time.sleep(max(0.005, frame_interval - elapsed))
@@ -1192,8 +1183,23 @@ class DrowningWebHandler(BaseHTTPRequestHandler):
             b64_data = payload.get("image", "")
             conf_thres = float(payload.get("conf", 0.22))
             model_key = payload.get("models") or payload.get("model_key") or "ensemble_committee"
+            smart_filter = bool(payload.get("smart_filter", True))
+            drown_threshold = float(payload.get("drown_threshold", 30.0))
+
+            if not engine.running or engine.source_type != "webcam":
+                engine.drowning_start_time = None
+                engine.continuous_drowning_duration = 0.0
+                engine.last_drowning_seen_time = 0.0
+                engine.last_alert_time = 0.0
+                engine._tracks = []
+
+            engine.running = True
+            engine.source_type = "webcam"
+            engine.source_name = "Camera máy tính (Webcam)"
+            engine.drowning_alert_threshold = drown_threshold
             engine.set_models(model_key)
             engine.conf_thres = conf_thres
+            engine.smart_filter = smart_filter
 
             if "," in b64_data:
                 b64_data = b64_data.split(",", 1)[1]
@@ -1208,15 +1214,17 @@ class DrowningWebHandler(BaseHTTPRequestHandler):
             if frame is None:
                 return self._send_json({"ok": False, "error": "Khong the giai ma frame"}, 400)
 
-            scale = min(1.0, 854 / max(frame.shape[1], 1), 480 / max(frame.shape[0], 1))
+            scale = min(1.0, 1280 / max(frame.shape[1], 1), 720 / max(frame.shape[0], 1))
             if scale < 1.0:
                 frame = cv2.resize(frame, (int(frame.shape[1] * scale), int(frame.shape[0] * scale)))
 
-            kept_boxes = engine.detect_boxes_raw(frame, multiscale=False, is_webcam=True)
-            result_img, counts, max_drown_conf, det_list = engine.render_boxes_on_frame(frame, kept_boxes, is_webcam=True)
+            kept_boxes = engine.detect_boxes_raw(frame, multiscale=False)
+            now = time.time()
+            engine._update_tracks_from_ai(kept_boxes, now)
+            tracked_boxes = engine._get_interpolated_boxes(now)
+            result_img, counts, max_drown_conf, det_list = engine.render_boxes_on_frame(frame, tracked_boxes)
 
             # Cap nhat trang thai he thong
-            now = time.time()
             engine._update_state_and_alert(
                 result_img=result_img,
                 counts=counts,
@@ -1236,6 +1244,10 @@ class DrowningWebHandler(BaseHTTPRequestHandler):
                 "max_drown_conf": max_drown_conf,
                 "detections": det_list,
                 "is_drowning": counts["drowning"] > 0,
+                "is_drowning_alert": engine.status["is_drowning_alert"],
+                "is_tracking_drowning": engine.status["is_tracking_drowning"],
+                "drowning_duration": engine.status["drowning_duration"],
+                "drowning_threshold": engine.status["drowning_threshold"],
                 "image": f"data:image/jpeg;base64,{b64_out}",
             })
 

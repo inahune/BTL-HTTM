@@ -213,6 +213,9 @@ async function startWebcamMode() {
         ctx.drawImage(webcamVideo, 0, 0, webcamCanvas.width, webcamCanvas.height);
         const b64 = webcamCanvas.toDataURL("image/jpeg", 0.82);
         const conf = parseFloat(confSlider.value);
+        const drownSlider = document.getElementById("drownSecSlider");
+        const drown_threshold = drownSlider ? parseFloat(drownSlider.value) : 30.0;
+        const smart_filter = document.getElementById("chkSmartFilter").checked;
         const selectedModels = getSelectedModels();
         const model_key = selectedModels.join(",");
         webcamFrameCount++;
@@ -223,6 +226,8 @@ async function startWebcamMode() {
           body: JSON.stringify({
             image: b64,
             conf,
+            smart_filter,
+            drown_threshold,
             models: selectedModels,
             model_key,
             frame_idx: webcamFrameCount,
@@ -248,20 +253,30 @@ async function startWebcamMode() {
           const videoContainer = document.getElementById("videoContainer");
           const banner = document.getElementById("emergencyBanner");
 
-          if (data.is_drowning) {
+          if (data.is_drowning_alert && data.counts.drowning > 0) {
+            drownCard.classList.remove("alert-warning");
             drownCard.classList.add("alert-active");
             videoContainer.classList.add("alert-border");
             if (!mutedTemporarily) {
               banner.classList.remove("hidden");
               document.getElementById("emergencyDetail").textContent =
-                `Phát hiện ${data.counts.drowning} người đuối nước trước Camera | Độ tin cậy: ${(data.max_drown_conf * 100).toFixed(1)}%`;
+                `Phát hiện ${data.counts.drowning} người đuối nước liên tiếp ${data.drowning_duration.toFixed(1)}s trước Camera | Độ tin cậy: ${(data.max_drown_conf * 100).toFixed(1)}%`;
             }
             playEmergencySiren(false);
-          } else {
+          } else if (data.is_tracking_drowning && data.counts.drowning > 0) {
+            drownCard.classList.add("alert-warning");
             drownCard.classList.remove("alert-active");
             videoContainer.classList.remove("alert-border");
             banner.classList.add("hidden");
+          } else {
+            drownCard.classList.remove("alert-active");
+            drownCard.classList.remove("alert-warning");
+            videoContainer.classList.remove("alert-border");
+            banner.classList.add("hidden");
           }
+          document.getElementById("maxDrownConf").textContent = data.is_tracking_drowning
+            ? `⏱️ Đang nghi đuối nước: ${data.drowning_duration.toFixed(1)}s / ${data.drowning_threshold.toFixed(0)}s`
+            : `Độ tin cậy cao nhất: ${Math.round((data.max_drown_conf || 0) * 100)}%`;
 
           // Cập nhật bảng danh sách đối tượng trực tiếp từ Webcam
           const tbody = document.getElementById("liveDetectionsBody");
