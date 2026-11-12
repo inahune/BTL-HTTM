@@ -1,0 +1,13 @@
+# công nghệ chính
+numpy
+opencv-python
+torch
+torchvision
+ultralytics
+PyYAML
+
+# thư viện bổ xung cho notebook
+roboflow
+pandas
+matplotlib
+jupyter
