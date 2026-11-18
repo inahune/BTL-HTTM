@@ -35,7 +35,18 @@ MODEL_PATHS = {
     "yolov26_v2": ROOT / "models" / "yolov26-dataset12k-v2" / "best (3).pt",
     "yolov26_v1": ROOT / "models" / "yolov26-dataset12kanh" / "best.pt",
     "yolov8n": ROOT / "models" / "drowning_detection_yolov8" / "weights" / "best.pt",
+    "nvbangg_drowning": ROOT / "models" / "nvbangg" / "best.pt",
 }
+
+import sys
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from utils.cascade_detector import (
+    predict_cascade,
+    OUTPUT_NAMES,
+)
 
 CLASS_LABELS_VI = {
     "Drowning": "Đuối nước (Drowning)",
@@ -382,9 +393,9 @@ class MonitoringEngine:
 
         # Thiết lập mặc định: Kết hợp Hội đồng 3 AI hoặc v3_best
         self.active_models = []
-        self.model_key = "ensemble_committee"
+        self.model_key = "cascade_nvbangg_v1"
         self.model = None
-        self.set_models("ensemble_committee")
+        self.set_models("cascade_nvbangg_v1")
 
         self.running = False
         self.source_path = ROOT / "tests" / "video3.mp4"
@@ -460,6 +471,7 @@ class MonitoringEngine:
             "ensemble_all": ["yolov26_v3_best", "yolov26_v3_recall", "yolov26_v1"],
             "ensemble_v3_rec_v1": ["yolov26_v3_recall", "yolov26_v1"],
             "ensemble_v3_v1": ["yolov26_v3_best", "yolov26_v1"],
+            "cascade_nvbangg_v1": ["nvbangg_drowning", "yolov26_v1"],
         }
         selected = []
         if isinstance(model_spec, (list, tuple)):
@@ -484,10 +496,30 @@ class MonitoringEngine:
             # Fallback ve model tot nhat co san
             fallback = "yolov26_v3_best" if "yolov26_v3_best" in self.models_cache else list(self.models_cache.keys())[0]
             selected = [fallback]
+        
+        # Nếu chọn cascade, bắt buộc sử dụng đúng hai model
+        if "nvbangg_drowning" in selected:
+            selected = [
+                "nvbangg_drowning",
+                "yolov26_v1",
+            ]
 
+            missing = [
+                key for key in selected
+                if key not in self.models_cache
+            ]
+
+            if missing:
+                raise RuntimeError(
+                    f"Không thể chạy Cascade. Model chưa được nạp: {missing}"
+                )
+            
         self.active_models = selected
         self.model_key = ",".join(selected)
-        self.model = self.models_cache.get(selected[0])
+        # Model 2 có class names theo quy ước 3 class của dự án
+        self.model = self.models_cache.get(
+            "yolov26_v1"
+        ) if "nvbangg_drowning" in selected else self.models_cache.get(selected[0])
         print(f"[ENGINE] Da kich hoat Ensemble ({len(self.active_models)} models): {self.active_models}")
 
     def set_model(self, model_key: str):
@@ -499,6 +531,21 @@ class MonitoringEngine:
         - Dùng chung cấu hình suy luận và lọc cho webcam, video và ảnh.
         - Hợp nhất cụm dự đoán và đồng thuận đa mô hình.
         """
+        # ==================================================
+        # CASCADE: nvbangg Drowning + YOLO26 v1
+        # ==================================================
+        if (
+            "nvbangg_drowning" in self.active_models
+            and "yolov26_v1" in self.active_models
+        ):
+            return predict_cascade(
+                frame=frame,
+                drowning_model=self.models_cache["nvbangg_drowning"],
+                detail_model=self.models_cache["yolov26_v1"],
+                conf_thres=self.conf_thres,
+                imgsz=640,
+            )        
+        
         raw_preds = []
 
         with torch.inference_mode():
@@ -579,7 +626,7 @@ class MonitoringEngine:
 
     def render_boxes_on_frame(self, frame: np.ndarray, kept_boxes: list):
         """Ve danh sach khung (xyxy, conf, cls_id) len frame va tra ve thong ke 3 trang thai."""
-        names = self.model.names
+        names = OUTPUT_NAMES
         annotated = frame.copy()
         annotator = Annotator(annotated, line_width=2)
 
@@ -590,7 +637,8 @@ class MonitoringEngine:
         det_list = []
 
         for idx, (xyxy, conf, cls_id) in enumerate(kept_boxes, start=1):
-            raw_name = names.get(cls_id, str(cls_id))
+            raw_name = OUTPUT_NAMES.get(cls_id, f"Unknown_{cls_id}")
+
             if cls_id == 0:
                 drowning_count += 1
                 max_drown_conf = max(max_drown_conf, conf)
@@ -697,11 +745,14 @@ class MonitoringEngine:
 
                 if raw_cls == 0:
                     drown_streak = trk.get("drown_streak", 0) + 1
-                    # Nếu người bơi đang lướt sải nhanh qua làn bơi (> 35 px/s), chỉ là chìm đầu tạm thời khi lấy hơi
-                    final_cls = 2 if (is_moving_swimmer and conf < 0.65) else 0
                 else:
-                    drown_streak = max(0, trk.get("drown_streak", 0) - 1)
-                    final_cls = raw_cls
+                    drown_streak = max(
+                        0,
+                        trk.get("drown_streak", 0) - 1
+                    )
+
+                # Không tự thay đổi class do chuyển động
+                final_cls = raw_cls
 
                 updated.append({
                     "bbox": smooth_bbox,
@@ -1160,7 +1211,7 @@ class DrowningWebHandler(BaseHTTPRequestHandler):
             rel_path = payload.get("path", "tests/video3.mp4")
             conf_thres = float(payload.get("conf", 0.22))
             smart_filter = bool(payload.get("smart_filter", True))
-            model_key = payload.get("models") or payload.get("model_key") or "ensemble_committee"
+            model_key = payload.get("models") or payload.get("model_key") or "cascade_nvbangg_v1"
             drown_threshold = float(payload.get("drown_threshold", 30.0))
 
             if rel_path == "webcam":
@@ -1182,7 +1233,7 @@ class DrowningWebHandler(BaseHTTPRequestHandler):
             # Nhan va xu ly frame truc tiep tu Webcam trinh duyet (WebRTC canvas)
             b64_data = payload.get("image", "")
             conf_thres = float(payload.get("conf", 0.22))
-            model_key = payload.get("models") or payload.get("model_key") or "ensemble_committee"
+            model_key = payload.get("models") or payload.get("model_key") or "cascade_nvbangg_v1"
             smart_filter = bool(payload.get("smart_filter", True))
             drown_threshold = float(payload.get("drown_threshold", 30.0))
 

@@ -10,12 +10,22 @@ from ultralytics import YOLO
 from ultralytics.utils.plotting import Annotator, colors
 
 ROOT = Path(__file__).resolve().parent.parent
+import sys
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from utils.cascade_detector import (
+    predict_cascade,
+    OUTPUT_NAMES,
+)
 
 V3_PATH = ROOT / "models" / "yolov26-v3" / "weights" / "best.pt"
 V3_RECALL_PATH = ROOT / "models" / "yolov26-v3" / "weights" / "best_recall.pt"
 MODEL_PATH = V3_PATH if V3_PATH.is_file() else (ROOT / "models" / "yolov26-dataset12k-v2" / "best (3).pt")
 MODEL_V1_PATH = ROOT / "models" / "yolov26-dataset12kanh" / "best.pt"
 VIDEO_PATH = ROOT / "tests" / "video7.mp4"
+NVBANGG_PATH = ROOT / "models" / "nvbangg" / "best.pt"
 
 if not MODEL_PATH.is_file():
     raise FileNotFoundError(f"Khong tim thay model: {MODEL_PATH}")
@@ -67,89 +77,25 @@ def is_pure_splash_box(frame, xyxy):
     return False
 
 
-def detect_keyframe(models_list, frame, conf_thres: float = 0.15):
+def detect_keyframe(
+    model_drowning,
+    model_detail,
+    frame,
+    conf_thres=0.22,
+):
     """
-    Ket hop Ensemble Da Mo Hinh (v3 Recall + v3 Best + v1):
-    - m3_recall @ 1088: Bat tron nguoi o xa va nhung nguoi nho bi bo sot.
-    - m3_best @ 1088: Chuan xac bien khung va phan loai.
-    - m1 @ 960: Bat nguoi boi loi goc kho va thanh be.
+    Cascade:
+    Model 1: Drowning / Not Drowning
+    Model 2: Person out of water / Swimming
     """
-    raw_preds = []
-    for src, mdl in models_list:
-        if mdl is None:
-            continue
-        sz = 1088 if "v3" in src else 960
-        res = mdl.predict(
-            source=frame,
-            imgsz=sz,
-            conf=max(0.12, conf_thres - 0.05),
-            iou=0.45,
-            agnostic_nms=True,
-            augment=False,
-            save=False,
-            verbose=False,
-        )[0]
-        if res.boxes is not None:
-            for box in res.boxes:
-                b = box.xyxy[0].tolist()
-                if not is_pure_splash_box(frame, b):
-                    raw_preds.append((b, float(box.conf[0]), int(box.cls[0]), src))
-        del res
 
-    raw_preds.sort(key=lambda x: x[1], reverse=True)
-    clusters = []
-    for xyxy, conf, cls_id, src in raw_preds:
-        matched = False
-        for cl in clusters:
-            iou, contain = box_metrics(xyxy, cl["xyxy"])
-            if iou > 0.25 or contain > 0.40:
-                if conf >= 0.18:
-                    cl["xyxy"] = [
-                        min(cl["xyxy"][0], xyxy[0]),
-                        min(cl["xyxy"][1], xyxy[1]),
-                        max(cl["xyxy"][2], xyxy[2]),
-                        max(cl["xyxy"][3], xyxy[3]),
-                    ]
-                cl["votes"].append((cls_id, conf, src))
-                matched = True
-                break
-        if not matched:
-            clusters.append({"xyxy": list(xyxy), "votes": [(cls_id, conf, src)]})
-
-    kept = []
-    for cl in clusters:
-        votes = cl["votes"]
-        best_conf = max(v[1] for v in votes)
-        if best_conf < conf_thres and len(votes) < 2:
-            continue
-
-        source_max = {}
-        for c, cf, src in votes:
-            source_max[(c, src)] = max(source_max.get((c, src), 0.0), cf)
-
-        scores = {0: 0.0, 1: 0.0, 2: 0.0}
-        drown_sources = set()
-        for (c, src), cf in source_max.items():
-            scores[c] += cf
-            if c == 0 and cf >= 0.35:
-                drown_sources.add(src)
-
-        if scores[1] > scores[0] and scores[1] > scores[2]:
-            final_cls = 1
-        elif scores[0] > scores[2]:
-            if scores[2] < 0.20 and scores[0] >= 0.30:
-                final_cls = 0
-            elif len(drown_sources) >= 2 or (scores[0] >= 0.75 and scores[0] > scores[2] * 1.50):
-                final_cls = 0
-            else:
-                final_cls = 2
-        else:
-            final_cls = 2
-
-        kept.append((cl["xyxy"], min(0.98, best_conf * 1.05), final_cls))
-    return kept
-
-
+    return predict_cascade(
+        frame=frame,
+        drowning_model=model_drowning,
+        detail_model=model_detail,
+        conf_thres=conf_thres,
+        imgsz=640,
+    )
 class SmoothInterpolationTracker:
     """
     Ky thuat Chia Frame + Noi suy Tuyen tinh (Keyframe + Linear Box Interpolation):
@@ -247,7 +193,7 @@ class SmoothInterpolationTracker:
             cx, cy, _ = self._center_and_size(xyxy)
             drown_streak = 1 if (raw_cls == 0 and conf >= 0.48) else 0
             swim_streak = 1 if raw_cls == 2 else 0
-            final_cls = 0 if (raw_cls == 0 and conf >= 0.85) else (2 if raw_cls == 0 else raw_cls)
+            final_cls = raw_cls
             new_tracks[tid] = {
                 "id": tid,
                 "xyxy": list(xyxy),
@@ -302,10 +248,23 @@ def draw_detections(frame, parsed_boxes, names):
 
 
 if __name__ == "__main__":
-    m3_best = YOLO(str(V3_PATH))
-    m3_rec = YOLO(str(V3_RECALL_PATH)) if V3_RECALL_PATH.is_file() else None
-    model_v1 = YOLO(str(MODEL_V1_PATH)) if MODEL_V1_PATH.is_file() else None
-    models_list = [("v3_rec", m3_rec), ("v3_best", m3_best), ("v1", model_v1)]
+    if not NVBANGG_PATH.is_file():
+        raise FileNotFoundError(
+            f"Không tìm thấy Model nvbangg: {NVBANGG_PATH}"
+        )
+
+    if not MODEL_V1_PATH.is_file():
+        raise FileNotFoundError(
+            f"Không tìm thấy Model YOLO26 v1: {MODEL_V1_PATH}"
+        )
+
+    model_drowning = YOLO(str(NVBANGG_PATH))
+    model_detail = YOLO(str(MODEL_V1_PATH))
+
+    print("[INFO] Model 1:", model_drowning.names)
+    print("[INFO] Model 2:", model_detail.names)
+
+    names = OUTPUT_NAMES
 
     cap = cv2.VideoCapture(str(VIDEO_PATH))
     if not cap.isOpened():
@@ -350,7 +309,12 @@ if __name__ == "__main__":
         with torch.inference_mode():
             ret, first_frame = cap.read()
             if ret:
-                dets_start = detect_keyframe(models_list, first_frame, conf_thres=CONF)
+                dets_start = detect_keyframe(
+                    model_drowning,
+                    model_detail,
+                    first_frame,
+                    conf_thres=CONF
+                )
                 tracks_start = tracker.step_keyframe(dets_start)
 
                 # Viet frame dau tien
@@ -371,7 +335,12 @@ if __name__ == "__main__":
 
                     # Chay Ensemble tren frame cuoi cua cum (Keyframe tiep theo)
                     last_frm = chunk_frames[-1]
-                    dets_end = detect_keyframe(models_list, last_frm, conf_thres=CONF)
+                    dets_end = detect_keyframe(
+                        model_drowning,
+                        model_detail,
+                        last_frm,
+                        conf_thres=CONF
+                    )
                     tracks_end = tracker.step_keyframe(dets_end)
 
                     # Noi suy tuyen tinh toa do khung 1:1 cho frame trung gian
