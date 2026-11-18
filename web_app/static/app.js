@@ -94,8 +94,8 @@ async function loadSamples(selectPath = null) {
 
   if (selectPath) {
     sel.value = selectPath;
-  } else if (sel.querySelector('option[value="tests/video3.mp4"]')) {
-    sel.value = "tests/video3.mp4";
+  } else if (sel.querySelector('option[value="tests/video1.mp4"]')) {
+    sel.value = "tests/video1.mp4";
   }
 }
 
@@ -347,6 +347,7 @@ const monitorModelSelect = document.getElementById("monitorModelSelect");
 const modelCheckboxes = document.querySelectorAll(".chk-model");
 
 const ENSEMBLE_PRESETS = {
+  cascade_nvbangg_v1: ["nvbangg_drowning", "yolov26_v1"],
   ensemble_committee: ["yolov26_v3_best", "yolov26_v3_recall", "yolov26_v1"],
   ensemble_v3_rec_v1: ["yolov26_v3_recall", "yolov26_v1"],
   ensemble_v3_v1: ["yolov26_v3_best", "yolov26_v1"],
@@ -359,7 +360,7 @@ const ENSEMBLE_PRESETS = {
 
 function getSelectedModels() {
   const checked = Array.from(document.querySelectorAll(".chk-model:checked")).map((cb) => cb.value);
-  return checked.length > 0 ? checked : ["yolov26_v3_best", "yolov26_v3_recall", "yolov26_v1"];
+  return checked.length > 0 ? checked : ["nvbangg_drowning", "yolov26_v1"];
 }
 
 if (monitorModelSelect) {
@@ -917,5 +918,4 @@ function drawAlertTimelineChart(alerts) {
 window.addEventListener("DOMContentLoaded", () => {
   loadSamples();
   loadAlertsAndStats();
-  loadModelEvaluation();
 });

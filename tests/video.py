@@ -24,14 +24,14 @@ V3_PATH = ROOT / "models" / "yolov26-v3" / "weights" / "best.pt"
 V3_RECALL_PATH = ROOT / "models" / "yolov26-v3" / "weights" / "best_recall.pt"
 MODEL_PATH = V3_PATH if V3_PATH.is_file() else (ROOT / "models" / "yolov26-dataset12k-v2" / "best (3).pt")
 MODEL_V1_PATH = ROOT / "models" / "yolov26-dataset12kanh" / "best.pt"
-VIDEO_PATH = ROOT / "tests" / "video7.mp4"
+VIDEO_PATH = ROOT / "tests" / "video15.mp4"
 NVBANGG_PATH = ROOT / "models" / "nvbangg" / "best.pt"
 
-if not MODEL_PATH.is_file():
-    raise FileNotFoundError(f"Khong tim thay model: {MODEL_PATH}")
-
-if not VIDEO_PATH.is_file():
-    raise FileNotFoundError(f"Khong tim thay video: {VIDEO_PATH}")
+for path in (NVBANGG_PATH, MODEL_V1_PATH, VIDEO_PATH):
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Không tìm thấy file: {path}"
+        )
 
 
 def box_metrics(b1, b2):
@@ -158,12 +158,8 @@ class SmoothInterpolationTracker:
                     drown_streak = max(0, trk["drown_streak"] - 1)
                     swim_streak = trk.get("swim_streak", 0) + 1
 
-                if raw_cls == 0 and not is_moving_swimmer and (drown_streak >= self.drowning_confirm_steps or conf >= 0.85):
-                    final_cls = 0
-                elif raw_cls == 0:
-                    final_cls = 2
-                else:
-                    final_cls = raw_cls
+                # Giữ nguyên class từ cascade detector
+                final_cls = raw_cls
 
                 new_tracks[tid] = {
                     "id": tid,
@@ -303,7 +299,6 @@ if __name__ == "__main__":
         max_coast_steps=3,
         drowning_confirm_steps=max(7, int(out_fps * 0.6 / KEYFRAME_STEP))
     )
-    names = m3_best.names
 
     try:
         with torch.inference_mode():

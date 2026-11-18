@@ -72,7 +72,8 @@
             <label class="group-label" for="monitorModelSelect">3. Cấu Hình Model AI Giám Sát</label>
             <select id="monitorModelSelect" class="form-select">
               <optgroup label="🔥 KẾT HỢP NHIỀU MODEL (ENSEMBLE - TỐT NHẤT)">
-                <option value="ensemble_committee" selected>🌟 Hội Đồng 3 AI (v3 Best + v3 Recall + v1) - Khuyên dùng</option>
+                <option value="cascade_nvbangg_v1" selected>Cascade: nvbangg Drowning + YOLO26 v1</option>
+                <option value="ensemble_committee">🌟 Hội Đồng 3 AI (v3 Best + v3 Recall + v1) - Khuyên dùng</option>
                 <option value="ensemble_v3_rec_v1">⭐ Ensemble Siêu Nhạy (v3 Recall + v1) - Bắt trọn Video 7 & Người ở xa</option>
                 <option value="ensemble_v3_v1">⚡ Ensemble Cân Bằng (v3 Best + v1) - Chuẩn xác & Khung đẹp</option>
               </optgroup>
@@ -95,16 +96,20 @@
               </div>
               <div class="ensemble-checkbox-grid">
                 <label class="ensemble-cb-item">
-                  <input type="checkbox" class="chk-model" value="yolov26_v3_best" checked />
-                  <span><strong>v3 Best</strong> (best.pt)</span>
-                </label>
-                <label class="ensemble-cb-item">
-                  <input type="checkbox" class="chk-model" value="yolov26_v3_recall" checked />
-                  <span><strong>v3 Recall</strong> (người xa)</span>
+                  <input type="checkbox" class="chk-model" value="nvbangg_drowning" checked />
+                  <span><strong>nvbangg Drowning</strong> (Drowning / Not Drowning)</span>
                 </label>
                 <label class="ensemble-cb-item">
                   <input type="checkbox" class="chk-model" value="yolov26_v1" checked />
-                  <span><strong>v1</strong> (bám bể)</span>
+                  <span><strong>YOLO26 v1</strong> (Person out of water / Swimming)</span>
+                </label>
+                <label class="ensemble-cb-item">
+                  <input type="checkbox" class="chk-model" value="yolov26_v3_best" />
+                  <span><strong>v3 Best</strong> (best.pt)</span>
+                </label>
+                <label class="ensemble-cb-item">
+                  <input type="checkbox" class="chk-model" value="yolov26_v3_recall" />
+                  <span><strong>v3 Recall</strong> (người xa)</span>
                 </label>
                 <label class="ensemble-cb-item">
                   <input type="checkbox" class="chk-model" value="yolov26_v2" />

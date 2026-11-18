@@ -251,6 +251,7 @@ def load_model_evaluations():
                 "history": epochs_list,
             }
             del ckpt
+            gc.collect()
         except Exception as exc:
             print(f"Loi doc checkpoint {path}: {exc}")
 
@@ -381,25 +382,18 @@ def get_water_context_ratio(frame: np.ndarray, xyxy=None) -> float:
 class MonitoringEngine:
     def __init__(self):
         self.lock = threading.Lock()
-        # Bộ đệm nạp trước các Model YOLO để chuyển đổi tức thì không cần đọc lại đĩa
+        # Bộ đệm nạp theo yêu cầu (On-Demand): chỉ giữ các Model đang kích hoạt trong RAM để tránh tràn bộ nhớ
         self.models_cache = {}
-        for k, p in MODEL_PATHS.items():
-            if p.is_file():
-                try:
-                    self.models_cache[k] = YOLO(str(p))
-                    print(f"[ENGINE] Da nap san Model: {k} -> {p.name}")
-                except Exception as e:
-                    print(f"[ENGINE] Loi nap model {k}: {e}")
 
-        # Thiết lập mặc định: Kết hợp Hội đồng 3 AI hoặc v3_best
+        # Thiết lập mặc định: Cascade nvbangg Drowning + YOLO26 v1
         self.active_models = []
         self.model_key = "cascade_nvbangg_v1"
         self.model = None
         self.set_models("cascade_nvbangg_v1")
 
         self.running = False
-        self.source_path = ROOT / "tests" / "video3.mp4"
-        self.source_name = "video3.mp4"
+        self.source_path = ROOT / "tests" / "video1.mp4"
+        self.source_name = "video1.mp4"
         self.source_type = "video"
         self.conf_thres = 0.22
         self.smart_filter = True  # True: loc bot nuoc, False: Raw YOLO (nhay canh bao)
@@ -423,7 +417,7 @@ class MonitoringEngine:
 
         self.status = {
             "running": False,
-            "source_name": "video3.mp4",
+            "source_name": "video1.mp4",
             "source_type": "video",
             "frame_idx": 0,
             "total_frames": 0,
@@ -476,27 +470,28 @@ class MonitoringEngine:
         selected = []
         if isinstance(model_spec, (list, tuple)):
             for k in model_spec:
-                if k in self.models_cache and k not in selected:
+                if k in MODEL_PATHS and MODEL_PATHS[k].is_file() and k not in selected:
                     selected.append(k)
         elif isinstance(model_spec, str):
             spec_clean = model_spec.strip()
             if spec_clean in PRESETS:
                 for k in PRESETS[spec_clean]:
-                    if k in self.models_cache and k not in selected:
+                    if k in MODEL_PATHS and MODEL_PATHS[k].is_file() and k not in selected:
                         selected.append(k)
             elif "," in spec_clean:
                 for part in spec_clean.split(","):
                     k = part.strip()
-                    if k in self.models_cache and k not in selected:
+                    if k in MODEL_PATHS and MODEL_PATHS[k].is_file() and k not in selected:
                         selected.append(k)
-            elif spec_clean in self.models_cache:
+            elif spec_clean in MODEL_PATHS and MODEL_PATHS[spec_clean].is_file():
                 selected = [spec_clean]
 
         if not selected:
             # Fallback ve model tot nhat co san
-            fallback = "yolov26_v3_best" if "yolov26_v3_best" in self.models_cache else list(self.models_cache.keys())[0]
+            available = [k for k, p in MODEL_PATHS.items() if p.is_file()]
+            fallback = "yolov26_v3_best" if "yolov26_v3_best" in available else available[0]
             selected = [fallback]
-        
+
         # Nếu chọn cascade, bắt buộc sử dụng đúng hai model
         if "nvbangg_drowning" in selected:
             selected = [
@@ -504,6 +499,30 @@ class MonitoringEngine:
                 "yolov26_v1",
             ]
 
+        # Neu danh sach model khong thay doi va da duoc nap day du thi giu nguyen
+        if selected == self.active_models and all(k in self.models_cache for k in selected):
+            return
+
+        # Giai phong cac model khong con nam trong danh sach selected de tiet kiem RAM
+        for old_k in list(self.models_cache.keys()):
+            if old_k not in selected:
+                del self.models_cache[old_k]
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # Nap cac model duoc chon ma chua co trong cache
+        for k in selected:
+            if k not in self.models_cache:
+                p = MODEL_PATHS.get(k)
+                if p and p.is_file():
+                    try:
+                        self.models_cache[k] = YOLO(str(p))
+                        print(f"[ENGINE] Da nap Model: {k} -> {p.name}")
+                    except Exception as e:
+                        print(f"[ENGINE] Loi nap model {k}: {e}")
+
+        if "nvbangg_drowning" in selected:
             missing = [
                 key for key in selected
                 if key not in self.models_cache
@@ -1071,12 +1090,15 @@ class DrowningWebHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, data: dict, status: int = 200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def _serve_file(self, file_path: Path):
         if not file_path.is_file():
@@ -1084,11 +1106,14 @@ class DrowningWebHandler(BaseHTTPRequestHandler):
             return
         mime, _ = mimetypes.guess_type(str(file_path))
         data = file_path.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", mime or "application/octet-stream")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", mime or "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def do_GET(self):
         engine = get_engine()
@@ -1148,12 +1173,15 @@ class DrowningWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/frame.jpg":
             jpeg = engine.latest_jpeg or b""
-            self.send_response(200)
-            self.send_header("Content-Type", "image/jpeg")
-            self.send_header("Content-Length", str(len(jpeg)))
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
-            self.end_headers()
-            self.wfile.write(jpeg)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(jpeg)))
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+                self.end_headers()
+                self.wfile.write(jpeg)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
             return
 
         if path == "/api/stream":
@@ -1208,7 +1236,7 @@ class DrowningWebHandler(BaseHTTPRequestHandler):
             })
 
         if path == "/api/start":
-            rel_path = payload.get("path", "tests/video3.mp4")
+            rel_path = payload.get("path", "tests/video1.mp4")
             conf_thres = float(payload.get("conf", 0.22))
             smart_filter = bool(payload.get("smart_filter", True))
             model_key = payload.get("models") or payload.get("model_key") or "cascade_nvbangg_v1"
@@ -1352,7 +1380,6 @@ class DrowningWebHandler(BaseHTTPRequestHandler):
 def main():
     global ENGINE
     init_db()
-    load_model_evaluations()
     ENGINE = MonitoringEngine()
     base_port = int(os.environ.get("PORT", 8501))
     server = None
